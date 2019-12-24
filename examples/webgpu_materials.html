@@ -1,0 +1,105 @@
+<html>
+  <head>
+    <title>Three.js WebGPU Renderer Materials</title>
+    <style>
+      body {
+        margin: 0;
+        background-color: #000;
+        color: #fff;
+        overscroll-behavior: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import {
+        BoxBufferGeometry,
+        BufferGeometryLoader,
+        Camera,
+        Mesh,
+        MeshBasicMaterial,
+        MeshNormalMaterial,
+        PerspectiveCamera,
+        Scene
+      } from 'https://raw.githack.com/mrdoob/three.js/r111/build/three.module.js';
+      import WebGPURenderer from '../src/renderers/WebGPURenderer.js';
+
+      // @TODO: Detect WebGPU capability
+
+      const run = () => {
+        let mouseX = 0, mouseY = 0;
+        let windowHalfX = window.innerWidth / 2;
+        let windowHalfY = window.innerHeight / 2;
+
+        const renderer = new WebGPURenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new Scene();
+
+        const camera = new PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 1000.0);
+        camera.position.z = 25;
+
+        const objects = [];
+        const materials = [
+          new MeshBasicMaterial({color: Math.floor(Math.random() * 0x1000000), transparent: false, opacity: 1.0}),
+          new MeshBasicMaterial({color: Math.floor(Math.random() * 0x1000000), transparent: true, opacity: 0.5}),
+          new MeshBasicMaterial({color: Math.floor(Math.random() * 0x1000000), transparent: false, opacity: 1.0}),
+          new MeshBasicMaterial({color: Math.floor(Math.random() * 0x1000000), transparent: true, opacity: 0.5}),
+          new MeshNormalMaterial({transparent: false, opacity: 1.0}),
+          new MeshNormalMaterial({transparent: true, opacity: 0.5})
+        ];
+        const loader = new BufferGeometryLoader();
+        loader.load( 'models/json/suzanne_buffergeometry.json', geometry => {
+          geometry.computeVertexNormals();
+          for (let i = 0; i < 200; i++) {
+            const mesh = new Mesh(geometry, materials[i % materials.length]);
+            mesh.position.x = Math.random() * 50 - 25;
+            mesh.position.y = Math.random() * 50 - 25;
+            mesh.position.z = Math.random() * 50 - 25;
+            mesh.rotation.x = Math.random() * 2 * Math.PI;
+            mesh.rotation.y = Math.random() * 2 * Math.PI;
+            mesh.scale.x = mesh.scale.y = mesh.scale.z = Math.random() * 2 + 1;
+            objects.push(mesh);
+            scene.add(mesh);
+          }
+        });
+
+        const onResize = event => {
+          windowHalfX = window.innerWidth / 2;
+          windowHalfY = window.innerHeight / 2;
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+        };
+
+        const onMouseMove = event => {
+          mouseX = (event.clientX - windowHalfX) * 0.10;
+          mouseY = (event.clientY - windowHalfY) * 0.10;
+        };
+
+        const render = () => {
+          requestAnimationFrame(render);
+
+          camera.position.x += (mouseX - camera.position.x) * .05;
+          camera.position.y += (-mouseY - camera.position.y) * .05;
+          camera.lookAt( scene.position );
+          for (const object of objects) {
+            object.rotation.x += 0.01;
+            object.rotation.y += 0.02;
+          }
+
+          renderer.render(scene, camera);
+        };
+
+        window.addEventListener('resize', onResize, false);
+        document.addEventListener('mousemove', onMouseMove, false);
+
+        render();
+      };
+
+      run();
+    </script>
+  </body>
+</html>
