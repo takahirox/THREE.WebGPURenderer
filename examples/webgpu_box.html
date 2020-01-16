@@ -21,11 +21,16 @@
         Scene
       } from 'https://raw.githack.com/mrdoob/three.js/r111/build/three.module.js';
       import WebGPURenderer from '../src/renderers/WebGPURenderer.js';
+      import glslangModule from './jsm/libs/glslang.js';
 
       // @TODO: Detect WebGPU capability
 
-      const run = () => {
-        const renderer = new WebGPURenderer();
+      const run = async () => {
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+        const glslang = await glslangModule();
+
+        const renderer = new WebGPURenderer({device, glslang});
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
         document.body.appendChild(renderer.domElement);

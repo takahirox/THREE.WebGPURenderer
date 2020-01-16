@@ -3,7 +3,6 @@ import {
   Matrix4,
   Vector3
 } from 'https://raw.githack.com/mrdoob/three.js/r111/build/three.module.js';
-import glslangModule from '../../examples/jsm/libs/glslang.js';
 
 const painterSort = (a, b) => {
   return a.z - b.z;
@@ -89,10 +88,8 @@ ShaderLibs.MeshNormalMaterial = {
   }`
 };
 
-let glslang = null;
-
 export default class WebGPURenderer {
-  constructor() {
+  constructor(options={}) {
     this._projScreenMatrix = new Matrix4();
     this._width = 640;
     this._height = 480;
@@ -118,24 +115,22 @@ export default class WebGPURenderer {
     this.domElement = document.createElement('canvas');
     this.context = this.domElement.getContext('gpupresent');
 
-    navigator.gpu.requestAdapter().then(adapter => {
-      Promise.all([
-        adapter.requestDevice(),
-        glslangModule()
-      ]).then(results => {
-        this._device = results[0];
-        glslang = results[1];
-        this._verticesManager = new WebGPUVerticesManager();
-        this._indicesManager = new WebGPUIndicesManager();
-        this._uniformsManager = new WebGPUUniformsManager();
-        this._programManager = new WebGPUProgramManager();
-        this._swapChain = this.context.configureSwapChain({
-          device: this._device,
-          format: this._format
-        });
-        this._setSize(this._width, this._height, this._pixelRatio);
-      });
+    if (!options.device || !options.glslang) {
+      throw new Error('WebGPURenderer: the constructor must take device and glslang parameters.');
+    }
+
+    this._device = options.device;
+    this._glslang = options.glslang;
+
+    this._verticesManager = new WebGPUVerticesManager();
+    this._indicesManager = new WebGPUIndicesManager();
+    this._uniformsManager = new WebGPUUniformsManager();
+    this._programManager = new WebGPUProgramManager(this._glslang);
+    this._swapChain = this.context.configureSwapChain({
+      device: this._device,
+      format: this._format
     });
+    this._setSize(this._width, this._height, this._pixelRatio);
   }
 
   setSize(width, height) {
@@ -307,7 +302,8 @@ export default class WebGPURenderer {
 }
 
 class WebGPUProgramManager {
-  constructor() {
+  constructor(glslang) {
+    this.glslang = glslang;
     this.map = new Map();
   }
 
@@ -320,6 +316,7 @@ class WebGPUProgramManager {
       }
 
       this.map.set(material.type, new WebGPUProgram(
+        this.glslang,
         shader.vertexShaderCode,
         shader.fragmentShaderCode,
         4,
@@ -331,7 +328,7 @@ class WebGPUProgramManager {
 }
 
 class WebGPUProgram {
-  constructor(vertexShaderCode, fragmentShaderCode, sampleCount, device) {
+  constructor(glslang, vertexShaderCode, fragmentShaderCode, sampleCount, device) {
     this.uniformGroupLayout = device.createBindGroupLayout({
       bindings: [{
         binding: 0,
