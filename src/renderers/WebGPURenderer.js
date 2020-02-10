@@ -15,7 +15,7 @@ const reversePainterSort = (a, b) => {
 const ShaderLibs = {};
 
 ShaderLibs.MeshBasicMaterial = {
-  vertexShaderCode: `#version 450
+  vertexShaderCode: `
   layout(set=0, binding=0) uniform Uniforms {
     mat4 modelMatrix;
     mat4 viewMatrix;
@@ -35,11 +35,16 @@ ShaderLibs.MeshBasicMaterial = {
     fragUv = uv;
     fragNormal = normal;
   }`,
-  fragmentShaderCode: `#version 450
+  fragmentShaderCode: `
   layout(set=0, binding=1) uniform Uniforms {
     vec3 color;
     float opacity;
   } uniforms;
+
+  #ifdef USE_MAP
+    layout(set=0, binding=2) uniform sampler mapSampler;
+    layout(set=0, binding=3) uniform texture2D map;
+  #endif
 
   layout(location = 0) in vec3 fragNormal;
   layout(location = 1) in vec2 fragUv;
@@ -47,11 +52,14 @@ ShaderLibs.MeshBasicMaterial = {
 
   void main() {
     outColor = vec4(uniforms.color, uniforms.opacity);
+    #ifdef USE_MAP
+      outColor *= texture(sampler2D(map, mapSampler), fragUv);
+    #endif
   }`
 };
 
 ShaderLibs.MeshNormalMaterial = {
-  vertexShaderCode: `#version 450
+  vertexShaderCode: `
   layout(set=0, binding=0) uniform Uniforms {
     mat4 modelMatrix;
     mat4 viewMatrix;
@@ -71,7 +79,7 @@ ShaderLibs.MeshNormalMaterial = {
     fragUv = uv;
     fragNormal = normalize(uniforms.normalMatrix * normal);
   }`,
-  fragmentShaderCode: `#version 450
+  fragmentShaderCode: `
   layout(set=0, binding=1) uniform Uniforms {
     vec3 color;
     float opacity;
@@ -308,37 +316,61 @@ class WebGPUProgramManager {
   }
 
   get(material, device) {
-    if (!this.map.has(material.type)) {
+    const key = material.type + ':' + (material.map ? 'map' : '');
+    if (!this.map.has(key)) {
       const shader = ShaderLibs[material.type];
 
       if (!shader) {
-        throw new Error('This type of material is not supported yet. ' + material.type);
+        throw new Error('This type of material is not supported yet. ' +  key);
       }
 
-      this.map.set(material.type, new WebGPUProgram(
+      const vertexShaderCode = '#version 450\n' +
+        shader.vertexShaderCode;
+
+      const fragmentShaderCode = '#version 450\n' +
+        (material.map ? '#define USE_MAP\n' : '') +
+        shader.fragmentShaderCode;
+
+      this.map.set(key, new WebGPUProgram(
         this.glslang,
-        shader.vertexShaderCode,
-        shader.fragmentShaderCode,
+        material,
+        vertexShaderCode,
+        fragmentShaderCode,
         4,
         device
       ));
     }
-    return this.map.get(material.type);
+    return this.map.get(key);
   }
 }
 
 class WebGPUProgram {
-  constructor(glslang, vertexShaderCode, fragmentShaderCode, sampleCount, device) {
-    this.uniformGroupLayout = device.createBindGroupLayout({
-      bindings: [{
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        type: 'uniform-buffer'
-      }, {
-        binding: 1,
+  constructor(glslang, material, vertexShaderCode, fragmentShaderCode, sampleCount, device) {
+    const bindings = [{
+      binding: 0,
+      visibility: GPUShaderStage.VERTEX,
+      type: 'uniform-buffer'
+    }, {
+      binding: 1,
+      visibility: GPUShaderStage.FRAGMENT,
+      type: 'uniform-buffer'
+    }];
+
+    if (material.map) {
+      bindings.push({
+        binding: 2,
         visibility: GPUShaderStage.FRAGMENT,
-        type: 'uniform-buffer'
-      }]
+        type: 'sampler'
+      });
+      bindings.push({
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        type: 'sampled-texture'
+      });
+    }
+
+    this.uniformGroupLayout = device.createBindGroupLayout({
+      bindings: bindings,
     });
 
     this.pipeline = device.createRenderPipeline({
@@ -405,9 +437,9 @@ class WebGPUProgram {
     return new WebGPUVertices(array, device);
   }
 
-  createUniforms(device) {
+  createUniforms(device, textures) {
     const buffers = this._createUniformBuffers(device);
-    const bindGroup = this._createUniformBindGroup(buffers, device);
+    const bindGroup = this._createUniformBindGroup(buffers, textures, device);
     return new WebGPUUniforms(buffers, bindGroup);
   }
 
@@ -418,7 +450,7 @@ class WebGPUProgram {
     return buffers;
   }
 
-  _createUniformBindGroup(buffers, device) {
+  _createUniformBindGroup(buffers, textures, device) {
     const bindings = [];
     for (let i = 0; i < buffers.length; i++) {
       const buffer = buffers[i];
@@ -428,6 +460,16 @@ class WebGPUProgram {
           buffer: buffer.buffer,
           size: buffer.byteLength
         }
+      });
+    }
+    for (let i = 0; i < textures.length; i++) {
+      bindings.push({
+        binding: bindings.length,
+        resource: textures[i].sampler.sampler
+      });
+      bindings.push({
+        binding: bindings.length,
+        resource: textures[i].texture.createView()
       });
     }
     return device.createBindGroup({
@@ -444,7 +486,12 @@ class WebGPUUniformsManager {
 
   get(object, camera, program, device) {
     if (!this.map.has(object)) {
-      this.map.set(object, program.createUniforms(device));
+      const textures = [];
+      if (object.material.map && object.material.map.image) {
+        const map = object.material.map;
+        textures.push(new WebGPUTexture(map.image, new WebGPUUniformSampler(device), device));
+      }
+      this.map.set(object, program.createUniforms(device, textures));
     }
     const uniforms = this.map.get(object);
     uniforms.update(object, camera);
@@ -528,6 +575,72 @@ class WebGPUUniformBuffer {
 
   updateFloat(offset, value) {
     this.float32Array[offset / 4] = value;
+  }
+}
+
+class WebGPUUniformSampler {
+  constructor(device) {
+    this.sampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear'
+    });
+  }
+}
+
+class WebGPUTexture {
+  constructor(image, sampler, device) {
+    this.sampler = sampler;
+
+    const width = image.width;
+    const height = image.height;
+
+    this.texture = device.createTexture({
+      size: {
+        width: width,
+        height: height,
+        depth: 1
+      },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.SAMPLED | GPUTextureUsage.COPY_DST
+    });
+
+    this.buffer = device.createBuffer({
+      size: width * height * 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const imageData = context.getImageData(0, 0, width, height);
+
+    const data = new Uint8Array(width *  height *  4);
+    for (let i = 0; i < data.length; i++) {  
+      const baseIndex = i * 4;
+      data[baseIndex + 0] = Math.floor(Math.random() * 256);
+      data[baseIndex + 1] = Math.floor(Math.random() * 256);
+      data[baseIndex + 2] = Math.floor(Math.random() * 256);
+      data[baseIndex + 3] = 255;
+    }
+
+    this.buffer.setSubData(0, imageData.data);
+
+    const encoder = device.createCommandEncoder({});
+    encoder.copyBufferToTexture({
+      buffer: this.buffer,
+      rowPitch: width * 4,
+      imageHeight: 0
+    }, {
+      texture: this.texture
+    }, {
+      width: width,
+      height: height,
+      depth: 1
+    });
+
+    device.defaultQueue.submit([encoder.finish()]);
   }
 }
 
