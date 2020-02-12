@@ -488,8 +488,10 @@ class WebGPUUniformsManager {
     if (!this.map.has(object)) {
       const textures = [];
       if (object.material.map && object.material.map.image) {
-        const map = object.material.map;
-        textures.push(new WebGPUTexture(map.image, new WebGPUUniformSampler(device), device));
+        const image = object.material.map.image;
+        const texture = new WebGPUTexture(image.width, image.height, device);
+        texture.upload(image, device);
+        textures.push(texture);
       }
       this.map.set(object, program.createUniforms(device, textures));
     }
@@ -588,16 +590,15 @@ class WebGPUUniformSampler {
 }
 
 class WebGPUTexture {
-  constructor(image, sampler, device) {
-    this.sampler = sampler;
-
-    const width = image.width;
-    const height = image.height;
+  constructor(width, height, device) {
+    this.width = width;
+    this.height = height;
+    this.sampler = new WebGPUUniformSampler(device);
 
     this.texture = device.createTexture({
       size: {
-        width: width,
-        height: height,
+        width: this.width,
+        height: this.height,
         depth: 1
       },
       format: 'rgba8unorm',
@@ -605,38 +606,30 @@ class WebGPUTexture {
     });
 
     this.buffer = device.createBuffer({
-      size: width * height * 4,
+      size: this.width * this.height * 4,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
     });
+  }
 
+  upload(image, device) {
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = this.width;
+    canvas.height = this.height;
     const context = canvas.getContext('2d');
     context.drawImage(image, 0, 0);
-    const imageData = context.getImageData(0, 0, width, height);
-
-    const data = new Uint8Array(width *  height *  4);
-    for (let i = 0; i < data.length; i++) {  
-      const baseIndex = i * 4;
-      data[baseIndex + 0] = Math.floor(Math.random() * 256);
-      data[baseIndex + 1] = Math.floor(Math.random() * 256);
-      data[baseIndex + 2] = Math.floor(Math.random() * 256);
-      data[baseIndex + 3] = 255;
-    }
-
+    const imageData = context.getImageData(0, 0, this.width, this.height);
     this.buffer.setSubData(0, imageData.data);
 
     const encoder = device.createCommandEncoder({});
     encoder.copyBufferToTexture({
       buffer: this.buffer,
-      rowPitch: width * 4,
+      rowPitch: this.width * 4,
       imageHeight: 0
     }, {
       texture: this.texture
     }, {
-      width: width,
-      height: height,
+      width: this.width,
+      height: this.height,
       depth: 1
     });
 
