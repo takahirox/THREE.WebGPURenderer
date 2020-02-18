@@ -38,7 +38,7 @@ const defaultVertexUniformsDefinitions = [{
 }];
 
 const defaultFragmentUniformsDefinitions = [{
-  name: 'color',
+  name: 'diffuse',
   format: 'color'
 }, {
   name: 'opacity',
@@ -56,6 +56,280 @@ const offsetTable = {
 };
 
 const ShaderLibs = {};
+
+// PBR shader code is based on https://github.com/KhronosGroup/glTF-Sample-Viewer/
+ShaderLibs.MeshStandardMaterial = {
+  vertexUniforms: [],
+  fragmentUniforms: [{
+    name: 'emissive',
+    format: 'color'
+  }, {
+    name: 'roughness',
+    format: 'float'
+  }, {
+    name: 'metalness',
+    format: 'float'
+  }],
+  textures: [{
+    name: 'map',
+    format: 'texture',
+    define: 'USE_MAP'
+  }, {
+    name: 'emissiveMap',
+    format: 'texture',
+    define: 'USE_EMISSIVEMAP'
+  }, {
+    name: 'normalMap',
+    format: 'texture',
+    define: 'USE_NORMALMAP'
+  }, {
+    name: 'roughnessMap',
+    format: 'texture',
+    define: 'USE_ROUGHNESSMAP'
+  }, {
+    name: 'metalnessMap',
+    format: 'texture',
+    define: 'USE_METALNESSMAP'
+  }, {
+    name: 'aoMap',
+    format: 'texture',
+    define: 'USE_AOMAP'
+  }],
+  vertexShaderCode: `
+  layout(set=0, binding=0) uniform Uniforms {
+    mat4 modelMatrix;
+    mat4 viewMatrix;
+    mat4 projectionMatrix;
+    mat3 normalMatrix;
+  } uniforms;
+
+  layout(location = 0) in vec3 position;
+  layout(location = 1) in vec3 normal;
+  layout(location = 2) in vec2 uv;
+
+  layout(location = 0) out vec3 fragPosition;
+  layout(location = 1) out vec3 fragNormal;
+  layout(location = 2) out vec2 fragUv;
+
+  void main() {
+    gl_Position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * vec4(position, 1.0);
+    fragPosition = position;
+    fragNormal = normalize((uniforms.modelMatrix * vec4(normal, 0.0)).xyz);
+    fragUv = uv;
+  }`,
+  fragmentShaderCode: `
+  layout(set=0, binding=1) uniform Uniforms {
+    vec3 diffuse;
+    float opacity;
+    vec3 emissive;
+    float roughness;
+    float metalness;
+  } uniforms;
+
+  // @TODO: Cut off the binding nums of the unused maps
+
+  #ifdef USE_MAP
+    layout(set=0, binding=MAP_BINDING) uniform sampler mapSampler;
+    layout(set=0, binding=MAP_SAMPLER_BINDING) uniform texture2D map;
+  #endif
+
+  #ifdef USE_EMISSIVEMAP
+    layout(set=0, binding=EMISSIVEMAP_BINDING) uniform sampler emissiveMapSampler;
+    layout(set=0, binding=EMISSIVEMAP_SAMPLER_BINDING) uniform texture2D emissiveMap;
+  #endif
+
+  #ifdef USE_NORMALMAP
+    layout(set=0, binding=NORMALMAP_BINDING) uniform sampler normalMapSampler;
+    layout(set=0, binding=NORMALMAP_SAMPLER_BINDING) uniform texture2D normalMap;
+  #endif
+
+  #ifdef USE_ROUGHNESSMAP
+    layout(set=0, binding=ROUGHNESSMAP_BINDING) uniform sampler roughnessMapSampler;
+    layout(set=0, binding=ROUGHNESSMAP_SAMPLER_BINDING) uniform texture2D roughnessMap;
+  #endif
+
+  #ifdef USE_METALNESSMAP
+    layout(set=0, binding=METALNESSMAP_BINDING) uniform sampler metalnessMapSampler;
+    layout(set=0, binding=METALNESSMAP_SAMPLER_BINDING) uniform texture2D metalnessMap;
+  #endif
+
+  #ifdef USE_AOMAP
+    layout(set=0, binding=AOMAP_BINDING) uniform sampler aoMapSampler;
+    layout(set=0, binding=AOMAP_SAMPLER_BINDING) uniform texture2D aoMap;
+  #endif
+
+  layout(location = 0) in vec3 fragPosition;
+  layout(location = 1) in vec3 fragNormal;
+  layout(location = 2) in vec2 fragUv;
+  layout(location = 0) out vec4 outColor;
+
+  const float M_PI = 3.141592653589793;
+
+  struct PBRInfo {
+    float NdotL;
+    float NdotV;
+    float NdotH;
+    float LdotH;
+    float VdotH;
+    float roughness;
+    float metallic;
+    vec3 reflectance0;
+    vec3 reflectance90;
+    float alphaRoughness;
+    vec3 diffuseColor;
+    vec3 specularColor;
+  };
+
+  vec3 getNormal() {
+    #ifdef USE_NORMALMAP
+      vec3 pos_dx = dFdx(fragPosition);
+      vec3 pos_dy = dFdy(fragPosition);
+      vec3 tex_dx = dFdx(vec3(fragUv, 0.0));
+      vec3 tex_dy = dFdy(vec3(fragUv, 0.0));
+      vec3 t = (tex_dy.t * pos_dx - tex_dx.t * pos_dy) / (tex_dx.s * tex_dy.t - tex_dy.s * tex_dx.t);
+
+      vec3 ng = normalize(fragNormal);
+      t = normalize(t - ng * dot(ng, t));
+      vec3 b = normalize(cross(ng, t));
+      mat3 tbn = mat3(t, b, ng);
+
+      vec3 n = texture(sampler2D(normalMap, normalMapSampler), fragUv).rgb;
+
+      float normalScale = 1.0;
+      n = normalize(tbn * ((2.0 * n - 1.0) * vec3(normalScale, normalScale, 1.0)));
+
+      return n;
+    #else
+      // @TODO: Check if this is correct
+      return normalize(fragNormal);
+    #endif
+  }
+
+  vec3 specularReflection(PBRInfo pbrInputs) {
+    return pbrInputs.reflectance0
+      + (pbrInputs.reflectance90 - pbrInputs.reflectance0)
+      * pow(clamp(1.0 - pbrInputs.VdotH, 0.0, 1.0), 5.0);
+  }
+
+  float geometricOcclusion(PBRInfo pbrInputs) {
+    float NdotL = pbrInputs.NdotL;
+    float NdotV = pbrInputs.NdotV;
+    float r = pbrInputs.alphaRoughness;
+
+    float attenuationL = 2.0 * NdotL / (NdotL + sqrt(r * r + (1.0 - r * r) * (NdotL * NdotL)));
+    float attenuationV = 2.0 * NdotV / (NdotV + sqrt(r * r + (1.0 - r * r) * (NdotV * NdotV)));
+    return attenuationL * attenuationV;
+  }
+
+  float microfacetDistribution(PBRInfo pbrInputs) {
+    float roughnessSq = pbrInputs.alphaRoughness * pbrInputs.alphaRoughness;
+    float f = (pbrInputs.NdotH * roughnessSq - pbrInputs.NdotH) * pbrInputs.NdotH + 1.0;
+    return roughnessSq / (M_PI * f * f);
+  }
+
+  vec3 diffuse(PBRInfo pbrInputs) {
+    return pbrInputs.diffuseColor / M_PI;
+  }
+
+  vec4 sRGBToLinear(in vec4 value) {
+    return vec4(mix(pow(value.rgb * 0.9478672986 + vec3(0.0521327014), vec3(2.4)), value.rgb * 0.0773993808, vec3(lessThanEqual(value.rgb, vec3(0.04045)))), value.a);
+  }
+
+  vec4 LinearTosRGB(in vec4 value) {
+    return vec4(mix(pow(value.rgb, vec3(0.41666)) * 1.055 - vec3(0.055), value.rgb * 12.92, vec3(lessThanEqual(value.rgb, vec3(0.0031308)))), value.a);
+  }
+
+  void main() {
+    vec4 baseColor = vec4(uniforms.diffuse, uniforms.opacity);
+    #ifdef USE_MAP
+      vec4 texelColor = texture(sampler2D(map, mapSampler), fragUv);
+      texelColor = sRGBToLinear(texelColor);
+      baseColor *= texelColor;
+    #endif
+    float roughnessFactor = uniforms.roughness;
+    #ifdef USE_ROUGHNESSMAP
+      vec4 texelRoughness = texture(sampler2D(roughnessMap, roughnessMapSampler), fragUv);
+      roughnessFactor *= texelRoughness.g;
+    #endif
+    roughnessFactor = clamp(roughnessFactor, 0.04, 1.0);
+    float metalnessFactor = uniforms.metalness;
+    #ifdef USE_METALNESSMAP
+      vec4 texelMetalness = texture(sampler2D(metalnessMap, metalnessMapSampler), fragUv);
+      metalnessFactor *= texelMetalness.b;
+    #endif
+    metalnessFactor = clamp(metalnessFactor, 0.0, 1.0);
+
+    float alphaRoughness = roughnessFactor * roughnessFactor;
+
+    vec3 f0 = vec3(0.04);
+    vec3 diffuseColor = baseColor.rgb * (vec3(1.0) - f0);
+    diffuseColor *= 1.0 - metalnessFactor;
+    vec3 specularColor = mix(f0, baseColor.rgb, metalnessFactor);
+
+    float reflectance = max(max(specularColor.r, specularColor.g), specularColor.b);
+    float reflectance90 = clamp(reflectance * 25.0, 0.0, 1.0);
+    vec3 specularEnvironmentR0 = specularColor.rgb;
+    vec3 specularEnvironmentR90 = vec3(1.0) * reflectance90;
+
+    vec3 camera = vec3(0.0, 0.0, 2.0); // @TODO: Should be from Camera object
+    vec3 lightDirection = vec3(1.0, 2.0, 2.0); // @TODO: Should be from Light nodes
+    vec3 n = getNormal();
+    vec3 v = normalize(camera - fragPosition);
+    vec3 l = normalize(lightDirection);
+    vec3 h = normalize(l + v);
+    vec3 reflection = -normalize(reflect(v, n));
+
+    float NdotL = clamp(dot(n, l), 0.001, 1.0);
+    float NdotV = clamp(abs(dot(n, v)), 0.001, 1.0);
+    float NdotH = clamp(dot(n, h), 0.0, 1.0);
+    float LdotH = clamp(dot(l, h), 0.0, 1.0);
+    float VdotH = clamp(dot(v, h), 0.0, 1.0);
+
+    PBRInfo pbrInputs = PBRInfo(
+      NdotL,
+      NdotV,
+      NdotH,
+      LdotH,
+      VdotH,
+      roughnessFactor,
+      metalnessFactor,
+      specularEnvironmentR0,
+      specularEnvironmentR90,
+      alphaRoughness,
+      diffuseColor,
+      specularColor
+    );
+
+    vec3 F = specularReflection(pbrInputs);
+    float G = geometricOcclusion(pbrInputs);
+    float D = microfacetDistribution(pbrInputs);
+
+    vec3 diffuseContrib = (1.0 - F) * diffuse(pbrInputs);
+    vec3 specContrib = F * G * D / (4.0 * NdotL * NdotV);
+
+    // @TODO: Should be configurable
+    float lightIntensity = 2.0;
+    vec3 lightColor = vec3(1.0) * lightIntensity;
+    vec3 color = NdotL * lightColor * (diffuseContrib + specContrib);
+
+    #ifdef USE_AOMAP
+      float occlusionStrength = 1.0;
+      float ao = texture(sampler2D(aoMap, aoMapSampler), fragUv).r;
+      color = mix(color, color * ao, occlusionStrength);
+    #endif
+
+    vec3 totalEmissiveRadiance = uniforms.emissive;
+    #ifdef USE_EMISSIVEMAP
+      vec4 emissiveColor = texture(sampler2D(emissiveMap, emissiveMapSampler), fragUv);
+      emissiveColor.rgb = sRGBToLinear(emissiveColor).rgb;
+      totalEmissiveRadiance *= emissiveColor.rgb;
+    #endif
+    color += totalEmissiveRadiance;
+
+    outColor = vec4(color, baseColor.a);
+    outColor = LinearTosRGB(outColor);
+  }`
+};
 
 ShaderLibs.MeshBasicMaterial = {
   vertexUniforms: [],
@@ -87,13 +361,13 @@ ShaderLibs.MeshBasicMaterial = {
   }`,
   fragmentShaderCode: `
   layout(set=0, binding=1) uniform Uniforms {
-    vec3 color;
+    vec3 diffuse;
     float opacity;
   } uniforms;
 
   #ifdef USE_MAP
-    layout(set=0, binding=2) uniform sampler mapSampler;
-    layout(set=0, binding=3) uniform texture2D map;
+    layout(set=0, binding=MAP_BINDING) uniform sampler mapSampler;
+    layout(set=0, binding=MAP_SAMPLER_BINDING) uniform texture2D map;
   #endif
 
   layout(location = 0) in vec3 fragNormal;
@@ -101,7 +375,7 @@ ShaderLibs.MeshBasicMaterial = {
   layout(location = 0) out vec4 outColor;
 
   void main() {
-    outColor = vec4(uniforms.color, uniforms.opacity);
+    outColor = vec4(uniforms.diffuse, uniforms.opacity);
     #ifdef USE_MAP
       outColor *= texture(sampler2D(map, mapSampler), fragUv);
     #endif
@@ -134,7 +408,7 @@ ShaderLibs.MeshNormalMaterial = {
   }`,
   fragmentShaderCode: `
   layout(set=0, binding=1) uniform Uniforms {
-    vec3 color;
+    vec3 diffuse;
     float opacity;
   } uniforms;
 
@@ -368,7 +642,14 @@ class WebGPUProgramManager {
   get(material, device) {
     if (!this.map.has(material)) {
       // @TODO: Create key more properly
-      const key = material.type + ':' + (material.map ? 'map' : '');
+      const key = material.type + ':' + [
+        !!material.map,
+        !!material.emissiveMap,
+        !!material.normalMap,
+        !!material.roughnessMap,
+        !!material.metalnessMap,
+        !!material.aoMap
+      ].join(':');
       if (!this.map2.has(key)) {
         this.map2.set(key, new WebGPUProgram(
           this.glslang,
@@ -411,23 +692,51 @@ class WebGPUProgram {
             continue;
           }
           break;
+        case 'emissiveMap':
+          if (!material.emissiveMap) {
+            continue;
+          }
+          break;
+        case 'normalMap':
+          if (!material.normalMap) {
+            continue;
+          }
+          break;
+        case 'roughnessMap':
+          if (!material.roughnessMap) {
+            continue;
+          }
+          break;
+        case 'metalnessMap':
+          if (!material.metalnessMap) {
+            continue;
+          }
+          break;
+        case 'aoMap':
+          if (!material.aoMap) {
+            continue;
+          }
+          break;
         default:
           console.error('Unknown texture ' + definition.name);
           continue;
       }
       bindings.push({
-        binding: binding++,
+        binding: binding,
         visibility: GPUShaderStage.FRAGMENT,
         type: 'sampler'
       });
       bindings.push({
-        binding: binding++,
+        binding: binding + 1,
         visibility: GPUShaderStage.FRAGMENT,
         type: 'sampled-texture'
       });
       if (definition.define) {
         defines.push('#define ' + definition.define);
+        defines.push('#define ' + definition.name.toUpperCase() + '_BINDING ' + binding);
+        defines.push('#define ' + definition.name.toUpperCase() + '_SAMPLER_BINDING ' + (binding + 1));
       }
+      binding += 2;
     }
 
     const vertexShaderCode = '#version 450\n' +
@@ -511,21 +820,31 @@ class WebGPUProgram {
   }
 
   createUniforms(device, material) {
-    const buffers = this._createUniformBuffers(device);
+    const buffers = this._createUniformBuffers(material, device);
     const textures = this._createUniformTextures(material, device);
     const bindGroup = this._createUniformBindGroup(buffers, textures, device);
     return new WebGPUUniforms(buffers, bindGroup);
   }
 
-  _createUniformBuffers(device) {
+  _createUniformBuffers(material, device) {
+    const shader = ShaderLibs[material.type];
+
     let vertexUniformsSize = 0;
     for (const definition of defaultVertexUniformsDefinitions) {
       vertexUniformsSize += offsetTable[definition.format];
     }
+    for (const definition of shader.vertexUniforms) {
+      vertexUniformsSize += offsetTable[definition.format];
+    }
+
     let fragmentUniformsSize = 0;
     for (const definition of defaultFragmentUniformsDefinitions) {
       fragmentUniformsSize += offsetTable[definition.format];
     }
+    for (const definition of shader.fragmentUniforms) {
+      fragmentUniformsSize += offsetTable[definition.format];
+    }
+
     const buffers = [];
     buffers.push(new WebGPUUniformBuffer(vertexUniformsSize, device)); // vertex
     buffers.push(new WebGPUUniformBuffer(fragmentUniformsSize, device)); // fragment
@@ -539,6 +858,31 @@ class WebGPUProgram {
         case 'map':
           if (material.map) {
             textures.push(this.textureManager.get(material.map, device));
+          }
+          break;
+        case 'emissiveMap':
+          if (material.emissiveMap) {
+            textures.push(this.textureManager.get(material.emissiveMap, device));
+          }
+          break;
+        case 'normalMap':
+          if (material.normalMap) {
+            textures.push(this.textureManager.get(material.normalMap, device));
+          }
+          break;
+        case 'roughnessMap':
+          if (material.roughnessMap) {
+            textures.push(this.textureManager.get(material.roughnessMap, device));
+          }
+          break;
+        case 'metalnessMap':
+          if (material.metalnessMap) {
+            textures.push(this.textureManager.get(material.metalnessMap, device));
+          }
+          break;
+        case 'aoMap':
+          if (material.aoMap) {
+            textures.push(this.textureManager.get(material.aoMap, device));
           }
           break;
         default:
@@ -603,6 +947,8 @@ class WebGPUUniforms {
     object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
     object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
 
+    const shader = ShaderLibs[object.material.type];
+
     // for vertex shader
     let offset = 0;
     const vertexUniformsBuffer = this.buffers[0];
@@ -638,7 +984,7 @@ class WebGPUUniforms {
     for (const definition of defaultFragmentUniformsDefinitions) {
       let value;
       switch (definition.name) {
-        case 'color':
+        case 'diffuse':
           value = object.material.color;
           break;
         case 'opacity':
@@ -648,7 +994,29 @@ class WebGPUUniforms {
           console.error('Unknown uniform ' + definition.name);
           continue;
       }
-      if (value) {
+      if (value !== undefined && value !== null) {
+        this._updateData(fragmentUniformsBuffer, definition.format, offset, value);
+      }
+      offset += offsetTable[definition.format];
+    }
+
+    for (const definition of shader.fragmentUniforms) {
+      let value;
+      switch (definition.name) {
+        case 'emissive':
+          value = object.material.emissive;
+          break;
+        case 'roughness':
+          value = object.material.roughness;
+          break;
+        case 'metalness':
+          value = object.material.metalness;
+          break;
+        default:
+          console.error('Unknown uniform ' + definition.name);
+          continue;
+      }
+      if (value !== undefined && value !== null) {
         this._updateData(fragmentUniformsBuffer, definition.format, offset, value);
       }
       offset += offsetTable[definition.format];
@@ -660,6 +1028,9 @@ class WebGPUUniforms {
     switch (format) {
       case 'float':
         buffer.updateFloat(offset, value);
+        break;
+      case 'float3':
+        buffer.updateVector3(offset, value);
         break;
       case 'color':
         buffer.updateColor(offset, value);
@@ -733,7 +1104,10 @@ class WebGPUUniformBuffer {
 
 class WebGPUUniformSampler {
   constructor(device) {
+    // @TODO: Should be configurable
     this.sampler = device.createSampler({
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
       magFilter: 'linear',
       minFilter: 'linear'
     });
@@ -831,7 +1205,6 @@ class WebGPUVertices {
 
   update(geometry) {
     const position = geometry.getAttribute('position');
-    const normal = geometry.getAttribute('normal');
 
     // @TODO: Remove this temporal workaround
     if (!geometry.getAttribute('uv')) {
