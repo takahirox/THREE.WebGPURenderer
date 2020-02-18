@@ -1,0 +1,77 @@
+<html>
+  <head>
+    <title>Three.js WebGPU Renderer Box</title>
+    <style>
+      body {
+        margin: 0;
+        background-color: #000;
+        color: #fff;
+        overscroll-behavior: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import {
+        BoxBufferGeometry,
+        Camera,
+        Mesh,
+        MeshBasicMaterial,
+        PerspectiveCamera,
+        Scene,
+        Texture,
+	TextureLoader
+      } from 'https://raw.githack.com/mrdoob/three.js/r111/build/three.module.js';
+      import {
+        GLTFLoader
+      } from 'https://raw.githack.com/mrdoob/three.js/r111/examples/jsm/loaders/GLTFLoader.js';
+      import WebGPURenderer from '../src/renderers/WebGPURenderer.js';
+      import glslangModule from './jsm/libs/glslang.js';
+
+      const modelFile = './models/gltf/DamagedHelmet/glTF-small/DamagedHelmet.gltf';
+
+      // @TODO: Detect WebGPU capability
+
+      const run = async () => {
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+        const glslang = await glslangModule();
+
+        const renderer = new WebGPURenderer({device, glslang});
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new Scene();
+
+        const camera = new PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 1000.0);
+        camera.position.z = 2.0;
+
+        let helmet;
+
+        new GLTFLoader().load(modelFile, gltf => {
+          helmet = gltf.scene;
+          scene.add(helmet);
+        });
+
+        const render = () => {
+          requestAnimationFrame(render);
+          if (helmet) helmet.rotation.y += 0.01;
+          renderer.render(scene, camera);
+        };
+
+        const onResize = event => {
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+        };
+
+        window.addEventListener('resize', onResize, false);
+
+        render();
+      };
+
+      run();
+    </script>
+  </body>
+</html>
