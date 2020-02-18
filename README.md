@@ -1,7 +1,7 @@
 # THREE.WebGPURenderer
 Experimental Three.js WebGPU renderer
 
-[Online Demo](https://takahirox.github.io/THREE.WebGPURenderer/examples/index.html) / [Video](https://twitter.com/superhoge/status/1208993042574630913)
+[Online Demo](https://takahirox.github.io/THREE.WebGPURenderer/examples/index.html) / [Video](https://twitter.com/superhoge/status/1229591960240832512)
 
 Turn on #enable-unsafe-webgpu via chrome://flags on Chrome Canary for the demo.
 
