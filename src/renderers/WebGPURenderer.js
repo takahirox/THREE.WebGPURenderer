@@ -425,6 +425,16 @@ ShaderLibs.MeshNormalMaterial = {
 
 export default class WebGPURenderer {
   constructor(options={}) {
+    if (!options.device || !options.glslang) {
+      throw new Error('WebGPURenderer: the constructor must take device and glslang parameters.');
+    }
+
+    this.domElement = document.createElement('canvas');
+    this.context = this.domElement.getContext('gpupresent');
+
+    this._device = options.device;
+    this._glslang = options.glslang;
+
     this._projScreenMatrix = new Matrix4();
     this._width = 640;
     this._height = 480;
@@ -440,16 +450,6 @@ export default class WebGPURenderer {
     this._cache = {
       currentProgram: null
     };
-
-    this.domElement = document.createElement('canvas');
-    this.context = this.domElement.getContext('gpupresent');
-
-    if (!options.device || !options.glslang) {
-      throw new Error('WebGPURenderer: the constructor must take device and glslang parameters.');
-    }
-
-    this._device = options.device;
-    this._glslang = options.glslang;
 
     this._verticesManager = new WebGPUVerticesManager();
     this._indicesManager = new WebGPUIndicesManager();
@@ -476,10 +476,6 @@ export default class WebGPURenderer {
    * @param {Camera} camera
    */
   render(scene, camera) {
-    if (!this._device) {
-      return;
-    }
-
     this._cache.currentProgram = null;
 
     scene.updateMatrixWorld();
@@ -520,9 +516,6 @@ export default class WebGPURenderer {
     canvas.height = Math.floor(this._height * this._pixelRatio);
     canvas.style.width = this._width + 'px';
     canvas.style.height = this._height + 'px';
-    if (!this._device) {
-      return;
-    }
     const colorTexture = this._device.createTexture({
       size: {
         width: Math.floor(this._width * this._pixelRatio),
@@ -673,7 +666,7 @@ class WebGPUProgram {
       throw new Error('This type of material is not supported yet. ' +  key);
     }
 
-    const bindings = [{
+    const entries = [{
       binding: 0,
       visibility: GPUShaderStage.VERTEX,
       type: 'uniform-buffer'
@@ -721,12 +714,12 @@ class WebGPUProgram {
           console.error('Unknown texture ' + definition.name);
           continue;
       }
-      bindings.push({
+      entries.push({
         binding: binding,
         visibility: GPUShaderStage.FRAGMENT,
         type: 'sampler'
       });
-      bindings.push({
+      entries.push({
         binding: binding + 1,
         visibility: GPUShaderStage.FRAGMENT,
         type: 'sampled-texture'
@@ -748,7 +741,7 @@ class WebGPUProgram {
       shader.fragmentShaderCode;
 
     this.uniformGroupLayout = device.createBindGroupLayout({
-      bindings: bindings,
+      entries: entries,
     });
 
     this.pipeline = device.createRenderPipeline({
@@ -894,10 +887,10 @@ class WebGPUProgram {
   }
 
   _createUniformBindGroup(buffers, textures, device) {
-    const bindings = [];
+    const entries = [];
     for (let i = 0; i < buffers.length; i++) {
       const buffer = buffers[i];
-      bindings.push({
+      entries.push({
         binding: i,
         resource: {
           buffer: buffer.buffer,
@@ -906,18 +899,18 @@ class WebGPUProgram {
       });
     }
     for (let i = 0; i < textures.length; i++) {
-      bindings.push({
-        binding: bindings.length,
+      entries.push({
+        binding: entries.length,
         resource: textures[i].sampler.sampler
       });
-      bindings.push({
-        binding: bindings.length,
+      entries.push({
+        binding: entries.length,
         resource: textures[i].texture.createView()
       });
     }
     return device.createBindGroup({
       layout: this.uniformGroupLayout,
-      bindings: bindings
+      entries: entries
     });
   }
 }
@@ -932,7 +925,7 @@ class WebGPUUniformsManager {
       this.map.set(object, program.createUniforms(device, object.material));
     }
     const uniforms = this.map.get(object);
-    uniforms.update(object, camera);
+    uniforms.update(object, camera, device);
     return uniforms;
   }
 }
@@ -943,7 +936,7 @@ class WebGPUUniforms {
     this.bindGroup = bindGroup;
   }
 
-  update(object, camera) {
+  update(object, camera, device) {
     object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
     object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
 
@@ -976,7 +969,7 @@ class WebGPUUniforms {
       }
       offset += offsetTable[definition.format];
     }
-    vertexUniformsBuffer.upload();
+    vertexUniformsBuffer.upload(device);
 
     // for fragment shader
     offset = 0;
@@ -1021,7 +1014,7 @@ class WebGPUUniforms {
       }
       offset += offsetTable[definition.format];
     }
-    fragmentUniformsBuffer.upload();
+    fragmentUniformsBuffer.upload(device);
   }
 
   _updateData(buffer, format, offset, value) {
@@ -1059,8 +1052,8 @@ class WebGPUUniformBuffer {
     this.float32Array = new Float32Array(arrayBuffer);
   }
 
-  upload() {
-    this.buffer.setSubData(0, this.float32Array);
+  upload(device) {
+    device.defaultQueue.writeBuffer(this.buffer, 0, this.float32Array.buffer);
   }
 
   updateMatrix4(offset, matrix4) {
@@ -1159,13 +1152,13 @@ class WebGPUTexture {
     const context = canvas.getContext('2d');
     context.drawImage(image, 0, 0);
     const imageData = context.getImageData(0, 0, this.width, this.height);
-    this.buffer.setSubData(0, imageData.data);
+    device.defaultQueue.writeBuffer(this.buffer, 0, imageData.data.buffer);
 
     const encoder = device.createCommandEncoder({});
     encoder.copyBufferToTexture({
       buffer: this.buffer,
-      rowPitch: this.width * 4,
-      imageHeight: 0
+      bytesPerRow: this.width * 4,
+      rowsPerImage: 0
     }, {
       texture: this.texture
     }, {
@@ -1187,7 +1180,7 @@ class WebGPUVerticesManager {
     if (!this.map.has(geometry)) {
       const vertices = program.createVertices(geometry, device);
       vertices.update(geometry);
-      vertices.upload();
+      vertices.upload(device);
       this.map.set(geometry, vertices);
     }
     return this.map.get(geometry);
@@ -1227,8 +1220,8 @@ class WebGPUVertices {
     }
   }
 
-  upload() {
-    this.buffer.setSubData(0, this.array);
+  upload(device) {
+    device.defaultQueue.writeBuffer(this.buffer, 0, this.array.buffer);
   }
 }
 
@@ -1245,7 +1238,7 @@ class WebGPUIndicesManager {
         device
       );
       indices.update(geometry);
-      indices.upload();
+      indices.upload(device);
       this.map.set(geometry, indices);
     }
     return this.map.get(geometry);
@@ -1268,7 +1261,7 @@ class WebGPUIndices {
     }
   }
 
-  upload() {
-    this.buffer.setSubData(0, this.array);
+  upload(device) {
+    device.defaultQueue.writeBuffer(this.buffer, 0, this.array.buffer);
   }
 }
