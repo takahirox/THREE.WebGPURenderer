@@ -1,3 +1,5 @@
+[Three.js official started to work on WebGPU renderer](https://github.com/mrdoob/three.js/tree/dev/examples/jsm/renderers/webgpu) then I may stop to update this project, and contribute to the Three.js official one instead.
+
 # THREE.WebGPURenderer
 Experimental Three.js WebGPU renderer
 
